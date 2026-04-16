@@ -410,25 +410,52 @@ class SmolVLMImageProcessor(TorchvisionBackend):
     def _preprocess(
         self,
         images: list[list["torch.Tensor"]],
-        do_resize: bool,
-        size: SizeDict,
-        resample: "PILImageResampling | tvF.InterpolationMode | int | None",
-        do_rescale: bool,
-        rescale_factor: float,
-        do_normalize: bool,
-        image_mean: float | list[float] | None,
-        image_std: float | list[float] | None,
-        do_pad: bool | None,
-        do_image_splitting: bool | None,
-        max_image_size: dict[str, int] | None,
-        return_row_col_info: bool | None,
-        disable_grouping: bool | None,
-        return_tensors: str | TensorType | None,
+        do_resize: bool = None,
+        size: SizeDict = None,
+        resample: "PILImageResampling | tvF.InterpolationMode | int | None" = None,
+        do_rescale: bool = None,
+        rescale_factor: float = None,
+        do_normalize: bool = None,
+        image_mean: float | list[float] | None = None,
+        image_std: float | list[float] | None = None,
+        do_pad: bool | None = None,
+        do_image_splitting: bool | None = None,
+        max_image_size: dict[str, int] | None = None,
+        return_row_col_info: bool | None = None,
+        disable_grouping: bool | None = None,
+        return_tensors: str | TensorType | None = None,
         **kwargs,
     ) -> BatchFeature:
         """
         Process a batch of images for the model.
         """
+        # Fall back to class-level defaults for any arg the older base class didn't pass
+        if do_resize is None:
+            do_resize = self.do_resize
+        if size is None:
+            size = SizeDict(**self.size) if isinstance(self.size, dict) else self.size
+        if resample is None:
+            resample = self.resample
+        if do_rescale is None:
+            do_rescale = self.do_rescale
+        if rescale_factor is None:
+            rescale_factor = getattr(self, "rescale_factor", 1.0 / 255.0)
+        if do_normalize is None:
+            do_normalize = self.do_normalize
+        if image_mean is None:
+            image_mean = self.image_mean
+        if image_std is None:
+            image_std = self.image_std
+        if do_pad is None:
+            do_pad = self.do_pad
+        if do_image_splitting is None:
+            do_image_splitting = self.do_image_splitting
+        if max_image_size is None:
+            max_image_size = self.max_image_size
+        if return_row_col_info is None:
+            return_row_col_info = self.return_row_col_info
+        if disable_grouping is None:
+            disable_grouping = kwargs.pop("disable_grouping", False)
 
         grouped_images, grouped_images_index = group_images_by_shape(
             images, is_nested=True, disable_grouping=disable_grouping
