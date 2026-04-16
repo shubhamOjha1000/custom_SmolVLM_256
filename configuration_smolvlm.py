@@ -136,6 +136,18 @@ class SmolVLMConfig(PreTrainedConfig):
     scale_factor: int = 2
     pad_token_id: int | None = 128_002
 
+    def __setattr__(self, key, value):
+        # Eagerly convert dict sub-configs to proper objects the moment they are
+        # set (e.g. by from_dict's setattr loop), so that the installed
+        # configuration_utils._attn_implementation setter never encounters a
+        # raw dict when it iterates over sub_configs to propagate the value.
+        if key == "vision_config" and isinstance(value, dict):
+            value = SmolVLMVisionConfig(**value)
+        elif key == "text_config" and isinstance(value, dict):
+            value["model_type"] = value.get("model_type", "llama")
+            value = CONFIG_MAPPING[value["model_type"]](**value)
+        super().__setattr__(key, value)
+
     def __post_init__(self, **kwargs):
         if self.vision_config is None:
             self.vision_config = SmolVLMVisionConfig()

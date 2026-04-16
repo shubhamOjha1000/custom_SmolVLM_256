@@ -792,7 +792,9 @@ class SmolVLMForConditionalGeneration(SmolVLMPreTrainedModel, GenerationMixin):
         self.image_token_id = self.config.image_token_id
         self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
         self.vocab_size = config.text_config.vocab_size
-        self.model.text_model.generation_config = GenerationConfig.from_model_config(config)
+        # from_model_config was added in a newer transformers version; skip on older builds.
+        if hasattr(GenerationConfig, "from_model_config"):
+            self.model.text_model.generation_config = GenerationConfig.from_model_config(config)
 
         # Initialize weights and apply final processing
         self.post_init()
