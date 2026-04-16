@@ -37,7 +37,23 @@ from ...image_utils import (
     make_nested_list_of_images,
 )
 from ...processing_utils import ImagesKwargs, Unpack
-from ...utils import TensorType, auto_docstring
+from ...utils import TensorType, auto_docstring as _auto_docstring_real
+
+def auto_docstring(*args, **kwargs):
+    try:
+        result = _auto_docstring_real(*args, **kwargs)
+    except (ValueError, Exception):
+        if args and callable(args[0]):
+            return args[0]
+        return lambda cls: cls
+    if args and callable(args[0]):
+        return result
+    def _safe_apply(cls):
+        try:
+            return result(cls)
+        except (ValueError, Exception):
+            return cls
+    return _safe_apply
 
 # TorchvisionBackend was split into its own module in a newer transformers version.
 # Fall back to BaseImageProcessorFast and supply rescale_and_normalize if needed.

@@ -9,7 +9,7 @@ the installed package with our custom versions. This way all relative
 imports resolve correctly and our changes are reflected.
 
 Run on Colab:
-    !pip install transformers accelerate Pillow -q
+    !pip install transformers accelerate Pillow num2words -q
     !python run_inference.py
 """
 

@@ -22,7 +22,23 @@ from ...feature_extraction_utils import BatchFeature
 from ...image_utils import ImageInput, make_nested_list_of_images
 from ...processing_utils import ProcessingKwargs, ProcessorMixin, Unpack
 from ...tokenization_utils_base import BatchEncoding, TextInput
-from ...utils import auto_docstring, is_num2words_available, logging
+from ...utils import auto_docstring as _auto_docstring_real, is_num2words_available, logging
+
+def auto_docstring(*args, **kwargs):
+    try:
+        result = _auto_docstring_real(*args, **kwargs)
+    except (ValueError, Exception):
+        if args and callable(args[0]):
+            return args[0]
+        return lambda cls: cls
+    if args and callable(args[0]):
+        return result
+    def _safe_apply(cls):
+        try:
+            return result(cls)
+        except (ValueError, Exception):
+            return cls
+    return _safe_apply
 from ...video_utils import VideoInput
 
 print("[custom_smolvlm] processing_smolvlm.py loaded — CUSTOM PROCESSOR ACTIVE")
@@ -121,7 +137,7 @@ class SmolVLMProcessor(ProcessorMixin):
         self,
         image_processor,
         tokenizer,
-        video_processor,
+        video_processor=None,
         image_seq_len: int = 169,
         chat_template: str | None = None,
         **kwargs,
@@ -141,8 +157,10 @@ class SmolVLMProcessor(ProcessorMixin):
         self.video_token = getattr(tokenizer, "video_token", "<video>")
 
         if not num2words:
-            raise ImportError(
-                "Package `num2words` is required to run SmolVLM processor. Install it with `pip install num2words`."
+            import warnings
+            warnings.warn(
+                "Package `num2words` is not installed. Video prompt timestamps will be unavailable. "
+                "Install with `pip install num2words` for full functionality."
             )
 
         super().__init__(image_processor, tokenizer, video_processor, chat_template=chat_template, **kwargs)
@@ -343,12 +361,14 @@ class SmolVLMProcessor(ProcessorMixin):
             chat_template = DEFAULT_CHAT_TEMPLATE
 
         # Users might be passing processor kwargs simply as `**kwargs`
-        if processor_kwargs:
-            processor_kwargs.setdefault("num_frames", self.video_processor.num_frames)
-            processor_kwargs.setdefault("fps", self.video_processor.fps)
-        else:
-            kwargs.setdefault("num_frames", self.video_processor.num_frames)
-            kwargs.setdefault("fps", self.video_processor.fps)
+        # Guard against video_processor being None (image-only usage)
+        if self.video_processor is not None:
+            if processor_kwargs:
+                processor_kwargs.setdefault("num_frames", self.video_processor.num_frames)
+                processor_kwargs.setdefault("fps", self.video_processor.fps)
+            else:
+                kwargs.setdefault("num_frames", self.video_processor.num_frames)
+                kwargs.setdefault("fps", self.video_processor.fps)
 
         return super().apply_chat_template(conversation, chat_template, processor_kwargs=processor_kwargs, **kwargs)
 
