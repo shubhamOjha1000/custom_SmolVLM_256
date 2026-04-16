@@ -631,6 +631,7 @@ class SmolVLMModel(SmolVLMPreTrainedModel):
             The attention mask indicating padded regions in the image.
         """
         batch_size, num_images, num_channels, height, width = pixel_values.shape
+        print(f"[vision] Image partitions per sample (sub-patches + global): {num_images}")
         pixel_values = pixel_values.to(dtype=self.dtype)  # fp16 compatibility
         pixel_values = pixel_values.view(batch_size * num_images, *pixel_values.shape[2:])
 
@@ -663,9 +664,11 @@ class SmolVLMModel(SmolVLMPreTrainedModel):
             pixel_values=pixel_values, patch_attention_mask=patch_attention_mask, return_dict=True, **kwargs
         )
         image_hidden_states = image_outputs.last_hidden_state
+        print(f"[vision] Tokens out of vision encoder — shape: {tuple(image_hidden_states.shape)}  (num_patches, seq_len, hidden_dim)")
 
         # Modality projection & resampling
         image_features = self.connector(image_hidden_states)
+        print(f"[vision] Shape into decoder after connector (pixel-shuffle + MLP): {tuple(image_features.shape)}  (num_patches, reduced_seq_len, text_hidden_dim)")
         image_outputs.pooler_output = image_features
 
         return image_outputs
