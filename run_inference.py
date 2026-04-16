@@ -70,7 +70,8 @@ print("\n[setup] Modules reloaded. Your custom code is now active.\n")
 # ── Step 4: Normal HuggingFace inference ──────────────────────────────────────
 import torch
 from PIL import Image
-from transformers import AutoProcessor, AutoModelForVision2Seq
+from transformers import AutoProcessor
+from transformers.models.smolvlm.modeling_smolvlm import SmolVLMForConditionalGeneration
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL_ID = "HuggingFaceTB/SmolVLM2-256M-Instruct"
@@ -79,7 +80,7 @@ print(f"[inference] Loading model from: {MODEL_ID}")
 print(f"[inference] Device: {DEVICE}\n")
 
 processor = AutoProcessor.from_pretrained(MODEL_ID)
-model = AutoModelForVision2Seq.from_pretrained(
+model = SmolVLMForConditionalGeneration.from_pretrained(
     MODEL_ID,
     torch_dtype=torch.bfloat16,
     _attn_implementation="eager",
