@@ -38,18 +38,32 @@ from ..auto import CONFIG_MAPPING, AutoConfig
 
 # Wrap auto_docstring so it silently degrades on older transformers where
 # SmolVLM classes aren't yet registered in the auto-doc registry.
+#
+# Two-phase problem:
+#   Phase 1 — @auto_docstring(checkpoint="...") calls _auto_docstring_real(...)
+#             which returns a decorator. No error yet.
+#   Phase 2 — Python applies that decorator to the class. THIS is where
+#             ValueError fires. Must wrap the returned decorator too.
 def auto_docstring(*args, **kwargs):
+    # Phase 1: get the result of calling the real auto_docstring
     try:
         result = _auto_docstring_real(*args, **kwargs)
-        if callable(result):
-            return result
-        return result
     except (ValueError, Exception):
-        # Called as @auto_docstring(checkpoint=...) — return identity decorator
-        if not args or not callable(args[0]):
-            return lambda cls: cls
-        # Called as @auto_docstring directly on a class/function
-        return args[0]
+        # Direct call failed — return identity or the object itself
+        if args and callable(args[0]):
+            return args[0]          # @auto_docstring used directly on a class
+        return lambda cls: cls      # @auto_docstring(checkpoint=...) style
+
+    # Phase 2: if result is a decorator (i.e. called as @auto_docstring(...)),
+    # wrap it so the error is caught when it gets applied to the class.
+    if args and callable(args[0]):
+        return result               # already applied to the class, return as-is
+    def _safe_apply(cls):
+        try:
+            return result(cls)
+        except (ValueError, Exception):
+            return cls
+    return _safe_apply
 
 print("[custom_smolvlm] configuration_smolvlm.py loaded — CUSTOM CONFIG ACTIVE")
 

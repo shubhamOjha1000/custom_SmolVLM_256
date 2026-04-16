@@ -37,16 +37,28 @@ from ...utils import auto_docstring as _auto_docstring_real, logging
 
 # Wrap auto_docstring so it silently degrades on older transformers where
 # SmolVLM classes aren't yet registered in the auto-doc registry.
+#
+# Two-phase problem:
+#   Phase 1 — @auto_docstring(checkpoint="...") calls _auto_docstring_real(...)
+#             which returns a decorator. No error yet.
+#   Phase 2 — Python applies that decorator to the class. THIS is where
+#             ValueError fires. Must wrap the returned decorator too.
 def auto_docstring(*args, **kwargs):
     try:
         result = _auto_docstring_real(*args, **kwargs)
-        if callable(result):
-            return result
-        return result
     except (ValueError, Exception):
-        if not args or not callable(args[0]):
-            return lambda cls: cls
-        return args[0]
+        if args and callable(args[0]):
+            return args[0]
+        return lambda cls: cls
+
+    if args and callable(args[0]):
+        return result
+    def _safe_apply(cls):
+        try:
+            return result(cls)
+        except (ValueError, Exception):
+            return cls
+    return _safe_apply
 
 # ── Compatibility shims for utilities added after transformers 4.48 ───────────
 try:
