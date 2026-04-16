@@ -62,7 +62,15 @@ def auto_docstring(*args, **kwargs):
 
 # ── Compatibility shims for utilities added after transformers 4.48 ───────────
 try:
-    from ...masking_utils import create_bidirectional_mask
+    from ...masking_utils import create_bidirectional_mask as _real_create_bidirectional_mask
+    import inspect as _inspect
+    _cbm_params = _inspect.signature(_real_create_bidirectional_mask).parameters
+    if "inputs_embeds" in _cbm_params:
+        create_bidirectional_mask = _real_create_bidirectional_mask
+    else:
+        # Older installed version doesn't accept inputs_embeds — wrap it
+        def create_bidirectional_mask(config, inputs_embeds, attention_mask):
+            return _real_create_bidirectional_mask(config=config, attention_mask=attention_mask)
 except ImportError:
     def create_bidirectional_mask(config, inputs_embeds, attention_mask):
         """Fallback: expand [B, seq] bool mask → [B, 1, seq, seq] float mask."""
