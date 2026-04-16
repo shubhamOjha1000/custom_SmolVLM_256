@@ -20,7 +20,17 @@
 # limitations under the License.
 
 
-from huggingface_hub.dataclasses import strict
+try:
+    from huggingface_hub.dataclasses import strict
+    # Verify this version of @strict works with non-dataclass (PreTrainedConfig)
+    # subclasses. Older huggingface_hub raises StrictDataclassDefinitionError.
+    class _Probe:
+        x: int = 0
+    strict(_Probe)
+    del _Probe
+except Exception:
+    def strict(cls):   # no-op fallback — @strict is validation only, not functional
+        return cls
 
 from ...configuration_utils import PreTrainedConfig
 from ...utils import auto_docstring, logging
