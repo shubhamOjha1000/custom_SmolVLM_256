@@ -26,7 +26,6 @@ import numpy as np
 import torch
 from torchvision.transforms.v2 import functional as tvF
 
-from ...image_processing_backends import TorchvisionBackend
 from ...image_processing_utils import BatchFeature
 from ...image_transforms import group_images_by_shape, reorder_images
 from ...image_utils import (
@@ -39,6 +38,30 @@ from ...image_utils import (
 )
 from ...processing_utils import ImagesKwargs, Unpack
 from ...utils import TensorType, auto_docstring
+
+# TorchvisionBackend was split into its own module in a newer transformers version.
+# Fall back to BaseImageProcessorFast and supply rescale_and_normalize if needed.
+try:
+    from ...image_processing_backends import TorchvisionBackend
+except (ImportError, ModuleNotFoundError):
+    try:
+        from ...image_processing_utils_fast import BaseImageProcessorFast as _BackendBase
+    except ImportError:
+        from ...image_processing_utils import BaseImageProcessor as _BackendBase
+
+    class TorchvisionBackend(_BackendBase):
+        """Compatibility shim: TorchvisionBackend → BaseImageProcessorFast for older transformers."""
+
+        def rescale_and_normalize(self, images, do_rescale, rescale_factor,
+                                  do_normalize, image_mean, image_std):
+            """Fused rescale + normalize on a [B, C, H, W] float tensor."""
+            if do_rescale:
+                images = images.to(dtype=torch.float32) * rescale_factor
+            if do_normalize:
+                mean = torch.tensor(image_mean, dtype=images.dtype, device=images.device)
+                std  = torch.tensor(image_std,  dtype=images.dtype, device=images.device)
+                images = (images - mean[None, :, None, None]) / std[None, :, None, None]
+            return images
 
 print("[custom_smolvlm] image_processing_smolvlm.py loaded — CUSTOM IMAGE PROCESSOR ACTIVE")
 
