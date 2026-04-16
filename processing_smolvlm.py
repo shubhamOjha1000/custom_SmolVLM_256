@@ -287,7 +287,8 @@ class SmolVLMProcessor(ProcessorMixin):
 
         if text is not None:
             text_inputs = self.tokenizer(text, **output_kwargs["text_kwargs"])
-            self._check_special_mm_tokens(text, text_inputs, modalities=["image"])
+            if hasattr(self, "_check_special_mm_tokens"):
+                self._check_special_mm_tokens(text, text_inputs, modalities=["image"])
             inputs.update(text_inputs)
 
         return BatchFeature(inputs, tensor_type=return_tensors)

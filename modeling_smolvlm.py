@@ -33,7 +33,20 @@ from ...modeling_flash_attention_utils import FlashAttentionKwargs
 from ...modeling_outputs import BaseModelOutput, BaseModelOutputWithPooling, ModelOutput
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
-from ...utils import auto_docstring, logging
+from ...utils import auto_docstring as _auto_docstring_real, logging
+
+# Wrap auto_docstring so it silently degrades on older transformers where
+# SmolVLM classes aren't yet registered in the auto-doc registry.
+def auto_docstring(*args, **kwargs):
+    try:
+        result = _auto_docstring_real(*args, **kwargs)
+        if callable(result):
+            return result
+        return result
+    except (ValueError, Exception):
+        if not args or not callable(args[0]):
+            return lambda cls: cls
+        return args[0]
 
 # ── Compatibility shims for utilities added after transformers 4.48 ───────────
 try:
@@ -251,9 +264,14 @@ class SmolVLMVisionAttention(nn.Module):
         keys = keys.view(batch_size, seq_length, self.num_heads, self.head_dim).transpose(1, 2)
         values = values.view(batch_size, seq_length, self.num_heads, self.head_dim).transpose(1, 2)
 
-        attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
-            self.config._attn_implementation, eager_attention_forward
-        )
+        if hasattr(ALL_ATTENTION_FUNCTIONS, "get_interface"):
+            attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
+                self.config._attn_implementation, eager_attention_forward
+            )
+        else:
+            attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get(
+                self.config._attn_implementation, eager_attention_forward
+            )
 
         attn_output, attn_weights = attention_interface(
             self,
@@ -509,7 +527,10 @@ class SmolVLMModel(SmolVLMPreTrainedModel):
         self.padding_idx = self.config.text_config.pad_token_id
         self.vocab_size = self.config.text_config.vocab_size
 
-        self.vision_model = SmolVLMVisionTransformer._from_config(config.vision_config)
+        if hasattr(SmolVLMVisionTransformer, "_from_config"):
+            self.vision_model = SmolVLMVisionTransformer._from_config(config.vision_config)
+        else:
+            self.vision_model = SmolVLMVisionTransformer(config.vision_config)
         self.connector = SmolVLMConnector(config)
         self.text_model = AutoModel.from_config(config.text_config)
 
@@ -670,7 +691,10 @@ class SmolVLMModel(SmolVLMPreTrainedModel):
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
         if use_cache and past_key_values is None:
-            past_key_values = DynamicCache(config=self.config)
+            try:
+                past_key_values = DynamicCache(config=self.config)
+            except TypeError:
+                past_key_values = DynamicCache()
 
         if inputs_embeds is None:
             inputs_embeds = self.text_model.get_input_embeddings()(input_ids).to(input_ids.device)

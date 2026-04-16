@@ -33,8 +33,23 @@ except Exception:
         return cls
 
 from ...configuration_utils import PreTrainedConfig
-from ...utils import auto_docstring, logging
+from ...utils import auto_docstring as _auto_docstring_real, logging
 from ..auto import CONFIG_MAPPING, AutoConfig
+
+# Wrap auto_docstring so it silently degrades on older transformers where
+# SmolVLM classes aren't yet registered in the auto-doc registry.
+def auto_docstring(*args, **kwargs):
+    try:
+        result = _auto_docstring_real(*args, **kwargs)
+        if callable(result):
+            return result
+        return result
+    except (ValueError, Exception):
+        # Called as @auto_docstring(checkpoint=...) — return identity decorator
+        if not args or not callable(args[0]):
+            return lambda cls: cls
+        # Called as @auto_docstring directly on a class/function
+        return args[0]
 
 print("[custom_smolvlm] configuration_smolvlm.py loaded — CUSTOM CONFIG ACTIVE")
 
