@@ -66,9 +66,14 @@ try:
     import inspect as _inspect
     _cbm_params = _inspect.signature(_real_create_bidirectional_mask).parameters
     if "inputs_embeds" in _cbm_params:
+        # New signature: (config, inputs_embeds, attention_mask)
         create_bidirectional_mask = _real_create_bidirectional_mask
+    elif "input_embeds" in _cbm_params:
+        # Older signature: uses singular "input_embeds" (no trailing s)
+        def create_bidirectional_mask(config, inputs_embeds, attention_mask):
+            return _real_create_bidirectional_mask(config=config, input_embeds=inputs_embeds, attention_mask=attention_mask)
     else:
-        # Older installed version doesn't accept inputs_embeds — wrap it
+        # Even older: no embeds arg at all
         def create_bidirectional_mask(config, inputs_embeds, attention_mask):
             return _real_create_bidirectional_mask(config=config, attention_mask=attention_mask)
 except ImportError:
