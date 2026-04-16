@@ -29,15 +29,63 @@ from torch import nn
 from ...activations import ACT2FN
 from ...cache_utils import Cache, DynamicCache
 from ...generation import GenerationConfig, GenerationMixin
-from ...masking_utils import create_bidirectional_mask
 from ...modeling_flash_attention_utils import FlashAttentionKwargs
-from ...modeling_layers import GradientCheckpointingLayer
 from ...modeling_outputs import BaseModelOutput, BaseModelOutputWithPooling, ModelOutput
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
-from ...utils import TransformersKwargs, auto_docstring, can_return_tuple, logging, torch_compilable_check
-from ...utils.generic import merge_with_config_defaults
-from ...utils.output_capturing import capture_outputs
+from ...utils import auto_docstring, logging
+
+# ── Compatibility shims for utilities added after transformers 4.48 ───────────
+try:
+    from ...masking_utils import create_bidirectional_mask
+except ImportError:
+    def create_bidirectional_mask(config, inputs_embeds, attention_mask):
+        """Fallback: expand [B, seq] bool mask → [B, 1, seq, seq] float mask."""
+        dtype = inputs_embeds.dtype
+        bsz, seq_len = attention_mask.shape
+        mask = attention_mask[:, None, None, :].to(dtype=dtype)   # [B,1,1,seq]
+        mask = (1.0 - mask) * torch.finfo(dtype).min              # 0 or -inf
+        return mask.expand(bsz, 1, seq_len, seq_len)               # [B,1,seq,seq]
+
+try:
+    from ...modeling_layers import GradientCheckpointingLayer
+except ImportError:
+    from torch import nn as _nn
+    GradientCheckpointingLayer = _nn.Module   # no-op base class fallback
+
+try:
+    from ...utils import TransformersKwargs
+except ImportError:
+    from typing import TypedDict
+    class TransformersKwargs(TypedDict, total=False):
+        pass
+
+try:
+    from ...utils import can_return_tuple
+except ImportError:
+    def can_return_tuple(fn):
+        return fn
+
+try:
+    from ...utils import torch_compilable_check
+except ImportError:
+    def torch_compilable_check(*args, **kwargs):
+        pass
+
+try:
+    from ...utils.generic import merge_with_config_defaults
+except ImportError:
+    def merge_with_config_defaults(fn):
+        return fn
+
+try:
+    from ...utils.output_capturing import capture_outputs
+except ImportError:
+    def capture_outputs(**_kwargs):
+        def decorator(fn):
+            return fn
+        return decorator
+# ─────────────────────────────────────────────────────────────────────────────
 from ..auto import AutoModel
 from .configuration_smolvlm import SmolVLMConfig, SmolVLMVisionConfig
 
