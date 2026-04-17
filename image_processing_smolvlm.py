@@ -785,15 +785,16 @@ def run_focus_partitioning_tests():
     print(f"           (batch={pv.shape[0]}, partitions={pv.shape[1]}, "
           f"C={pv.shape[2]}, H={pv.shape[3]}, W={pv.shape[4]})")
 
-    # ── Test 8: focus_point=None → original partitioning unchanged ────────────
-    img8 = torch.rand(3, 200, 200)          # small image → should NOT be split
+    # ── Test 8: focus_point=None → original grid partitioning (never forced to 2) ──
+    # Any image goes through: initial resize to longest_edge=1456 → grid split.
+    # A 200×200 input upscales to 1456×1456 → 4×4+1=17 tiles (not 2).
+    img8 = torch.rand(3, 200, 200)
     result8 = proc.preprocess([img8], return_tensors="pt", focus_point=None)
     pv8 = result8["pixel_values"]
-    # Small image (200×200 < 364 max_image_size) → 1 partition (no splitting needed)
-    assert pv8.shape[1] == 1, \
-        f"T8 FAIL: expected 1 partition for small image, got {pv8.shape[1]}"
-    print(f"  T8 PASS  focus_point=None, small image → {pv8.shape[1]} partition "
-          f"(original behaviour preserved)")
+    assert pv8.shape[1] != 2, \
+        f"T8 FAIL: focus_point=None should use grid splitting, not focus (got 2)"
+    print(f"  T8 PASS  focus_point=None → {pv8.shape[1]} partitions "
+          f"(grid splitting active, not capped at 2)")
 
     print("\nAll 8 tests PASSED")
     print(f"\nNote: after the vision encoder, 2 partitions should produce shape")
