@@ -94,7 +94,7 @@ model = SmolVLMForConditionalGeneration.from_pretrained(
 
 # ── Replace this with your actual image path ──────────────────────────────────
 IMAGE_PATH = "/content/drive/MyDrive/Test_imgage_folder/img1.png"   # <-- change this
-PROMPT = "Describe this image."
+PROMPT = "What is the person holding"
 
 if not os.path.exists(IMAGE_PATH):
     print(f"[warning] Image not found: {IMAGE_PATH}")
