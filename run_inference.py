@@ -93,7 +93,7 @@ model = SmolVLMForConditionalGeneration.from_pretrained(
 ).to(DEVICE)
 
 # ── Replace this with your actual image path ──────────────────────────────────
-IMAGE_PATH = "statue_of_liberty.jpg"   # <-- change this
+IMAGE_PATH = "/content/drive/MyDrive/Test_imgage_folder/img1.png"   # <-- change this
 PROMPT = "Describe this image."
 
 if not os.path.exists(IMAGE_PATH):
@@ -196,7 +196,7 @@ print("\n" + "─"*56)
 print("  FOCUS-POINT INFERENCE  (local crop + global = 2 tiles)")
 print("─"*56)
 
-FOCUS_POINT = (0.5, 0.3)   # normalised (x, y) in [0,1]  — change as needed
+FOCUS_POINT = (0.5, 0.5)   # normalised (x, y) in [0,1]  — change as needed
 
 raw_inputs = processor.image_processor.preprocess(
     [image], return_tensors="pt", focus_point=FOCUS_POINT
