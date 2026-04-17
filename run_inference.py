@@ -21,9 +21,12 @@ import time
 import argparse
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--image", default="statue_of_liberty.jpg", help="Path to input image")
-parser.add_argument("--prompt", default="Describe this image.", help="Text prompt")
-parser.add_argument("--focus", default="0.5,0.5", help="Focus point as x,y in [0,1] (default: 0.5,0.5)")
+parser.add_argument("--image",      default="statue_of_liberty.jpg",  help="Path to input image")
+parser.add_argument("--prompt",     default="Describe this image.",    help="Text prompt")
+parser.add_argument("--focus",      default="0.5,0.5",                 help="Focus point x,y in [0,1] (default: 0.5,0.5)")
+parser.add_argument("--max-tokens", default=100,   type=int,           help="Max new tokens to generate (default: 100)")
+parser.add_argument("--dtype",      default="bfloat16",
+                    choices=["bfloat16", "float16", "float32", "int8"], help="Model dtype (default: bfloat16)")
 args = parser.parse_args()
 
 # ── Step 1: Find where transformers is installed ──────────────────────────────
@@ -87,17 +90,31 @@ from transformers.models.smolvlm.modeling_smolvlm import SmolVLMForConditionalGe
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL_ID = "HuggingFaceTB/SmolVLM2-256M-Instruct"
-MAX_NEW_TOKENS = 100
+MAX_NEW_TOKENS = args.max_tokens
 
 print(f"[inference] Loading model from: {MODEL_ID}")
 print(f"[inference] Device: {DEVICE}\n")
 
 processor = AutoProcessor.from_pretrained(MODEL_ID)
-model = SmolVLMForConditionalGeneration.from_pretrained(
-    MODEL_ID,
-    torch_dtype=torch.bfloat16,
-    _attn_implementation="eager",
-).to(DEVICE)
+if args.dtype == "int8":
+    try:
+        from transformers import BitsAndBytesConfig
+    except ImportError:
+        raise RuntimeError("int8 requires bitsandbytes: pip install bitsandbytes -q")
+    print("[inference] Loading in 8-bit (bitsandbytes)...")
+    model = SmolVLMForConditionalGeneration.from_pretrained(
+        MODEL_ID,
+        quantization_config=BitsAndBytesConfig(load_in_8bit=True),
+        _attn_implementation="eager",
+        device_map="auto",
+    )
+else:
+    TORCH_DTYPE = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[args.dtype]
+    model = SmolVLMForConditionalGeneration.from_pretrained(
+        MODEL_ID,
+        torch_dtype=TORCH_DTYPE,
+        _attn_implementation="eager",
+    ).to(DEVICE)
 
 IMAGE_PATH = args.image
 PROMPT     = args.prompt
