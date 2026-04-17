@@ -67,6 +67,10 @@ import transformers.models.smolvlm  # triggers re-import after cache clear
 
 print("\n[setup] Modules reloaded. Your custom code is now active.\n")
 
+# ── Step 3b: Run focus-partitioning tests ─────────────────────────────────────
+from transformers.models.smolvlm.image_processing_smolvlm import run_focus_partitioning_tests
+run_focus_partitioning_tests()
+
 # ── Step 4: Normal HuggingFace inference ──────────────────────────────────────
 import torch
 from PIL import Image
@@ -116,3 +120,26 @@ with torch.no_grad():
 
 output = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
 print(f"\n[output]\n{output}")
+
+# ── Focus-point inference ─────────────────────────────────────────────────────
+print("\n[focus] Running focus-point inference...")
+FOCUS_POINT = (0.5, 0.3)   # normalised (x, y): 0-1 fractions of W and H
+                             # change to pixel coords e.g. (320, 240) for a 640×480 image
+
+raw_inputs = processor.image_processor.preprocess(
+    [image], return_tensors="pt", focus_point=FOCUS_POINT
+)
+# pixel_values shape → (1, 2, 3, 364, 364)
+#   partition 0: local crop centred on FOCUS_POINT (≈25 % of image area)
+#   partition 1: global overview of the full image
+# After vision encoder → (2, 64, 576) for SmolVLM2-256M
+print(f"[focus] pixel_values shape: {tuple(raw_inputs['pixel_values'].shape)}")
+
+text_inputs = processor.tokenizer(prompt_text, return_tensors="pt")
+focus_inputs = {**raw_inputs, **text_inputs}
+focus_inputs = {k: v.to(DEVICE) for k, v in focus_inputs.items()}
+
+with torch.no_grad():
+    focus_ids = model.generate(**focus_inputs, max_new_tokens=100)
+focus_output = processor.batch_decode(focus_ids, skip_special_tokens=True)[0]
+print(f"\n[focus output]\n{focus_output}")

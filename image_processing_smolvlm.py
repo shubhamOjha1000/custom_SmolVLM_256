@@ -247,10 +247,24 @@ class SmolVLMImageProcessor(TorchvisionBackend):
 
     def __init__(self, **kwargs: Unpack[SmolVLMImageProcessorKwargs]):
         super().__init__(**kwargs)
+        self._focus_point = None  # set via preprocess(focus_point=...) before each call
 
     @auto_docstring
-    def preprocess(self, images: ImageInput, **kwargs: Unpack[SmolVLMImageProcessorKwargs]) -> BatchFeature:
-        return super().preprocess(images, **kwargs)
+    def preprocess(self, images: ImageInput, focus_point=None, **kwargs: Unpack[SmolVLMImageProcessorKwargs]) -> BatchFeature:
+        """
+        focus_point (`tuple`, *optional*):
+            ``(x, y)`` coordinates of the region of interest. When provided,
+            image splitting is replaced by dynamic focus partitioning: one local
+            crop centred on ``(x, y)`` (covering ≈25 % of the image) + one
+            global overview → exactly 2 partitions total.
+            Values in [0, 1] are treated as normalised fractions; values > 1
+            as absolute pixel coordinates.
+        """
+        self._focus_point = focus_point
+        try:
+            return super().preprocess(images, **kwargs)
+        finally:
+            self._focus_point = None  # always reset, even on exception
 
     def _prepare_images_structure(self, images: ImageInput, expected_ndims: int = 3) -> ImageInput:
         """
@@ -345,6 +359,76 @@ class SmolVLMImageProcessor(TorchvisionBackend):
         num_splits_w = [num_splits_w] * batch_size
 
         return frames, num_splits_h, num_splits_w
+
+    def split_images_around_point(
+        self,
+        images: torch.Tensor,
+        point: tuple,
+        max_image_size: dict,
+        resample=None,
+    ):
+        """
+        Create exactly 2 partitions from each image:
+          1. A square local crop **centered at ``point``** that covers ≈25 % of
+             the original image area  (crop_side = sqrt(0.25 * H * W)).
+          2. The full original image resized to max_image_size (global overview).
+
+        Args:
+            images:         (batch_size, C, H, W) float tensor.
+            point:          (x, y) where x is the column and y is the row.
+                            Values in [0, 1] → treated as normalised fractions.
+                            Values > 1       → treated as absolute pixel coords.
+            max_image_size: dict with key ``"longest_edge"``.
+            resample:       resampling filter forwarded to self.resize.
+
+        Returns:
+            frames : (batch_size, 2, C, max_size, max_size)
+                      dim-1 order: [local_crop, global_image]
+            rows   : [1] * batch_size  — signals a 1×1 sub-grid to the processor
+            cols   : [1] * batch_size
+        """
+        batch_size, num_channels, height, width = images.size()
+        max_size = max_image_size["longest_edge"]
+
+        px, py = float(point[0]), float(point[1])
+
+        # Normalised [0,1] → absolute pixel coordinates
+        if 0.0 <= px <= 1.0 and 0.0 <= py <= 1.0:
+            px = px * width
+            py = py * height
+
+        px, py = int(round(px)), int(round(py))
+
+        # Square crop whose area = 25 % of the original image
+        crop_side = max(1, int(math.sqrt(0.25 * height * width)))
+
+        # Clamp so the crop stays fully inside the image
+        x1 = max(0, min(px - crop_side // 2, width - crop_side))
+        y1 = max(0, min(py - crop_side // 2, height - crop_side))
+        x2 = x1 + crop_side
+        y2 = y1 + crop_side
+
+        print(f"[focus] point=({px},{py}), crop=[{x1}:{x2}, {y1}:{y2}], "
+              f"crop_side={crop_side}, area_ratio={crop_side**2 / (height*width):.3f}")
+
+        # Local crop → resize to (max_size, max_size)
+        local_crop = images[:, :, y1:y2, x1:x2].contiguous()
+        local_crop_resized = self.resize(
+            local_crop, SizeDict(height=max_size, width=max_size), resample=resample
+        )
+
+        # Global: full image → resize to (max_size, max_size)
+        global_image = self.resize(
+            images, SizeDict(height=max_size, width=max_size), resample=resample
+        )
+
+        # Stack: (batch_size, 2, C, max_size, max_size)
+        frames = torch.stack([local_crop_resized, global_image], dim=1)
+
+        rows = [1] * batch_size  # 1×1 sub-grid → processor renders <row_1_col_1> + global
+        cols = [1] * batch_size
+
+        return frames, rows, cols
 
     def resize_for_vision_encoder(
         self,
@@ -474,13 +558,22 @@ class SmolVLMImageProcessor(TorchvisionBackend):
         if do_image_splitting:
             rows_grouped = {}
             cols_grouped = {}
+            focus_point = getattr(self, '_focus_point', None)
             for shape, stacked_images in grouped_images.items():
-                stacked_images = self.resize_for_vision_encoder(
-                    stacked_images, max_image_size["longest_edge"], resample=resample
-                )
-                stacked_images, rows, cols = self.split_images(
-                    stacked_images, max_image_size=max_image_size, resample=resample
-                )
+                if focus_point is not None:
+                    # ── Dynamic focus partitioning: local crop + global = 2 tiles ──
+                    stacked_images, rows, cols = self.split_images_around_point(
+                        stacked_images, focus_point,
+                        max_image_size=max_image_size, resample=resample,
+                    )
+                else:
+                    # ── Original grid-based partitioning (unchanged) ──────────────
+                    stacked_images = self.resize_for_vision_encoder(
+                        stacked_images, max_image_size["longest_edge"], resample=resample
+                    )
+                    stacked_images, rows, cols = self.split_images(
+                        stacked_images, max_image_size=max_image_size, resample=resample
+                    )
                 split_images_grouped[shape] = stacked_images
                 rows_grouped[shape] = rows
                 cols_grouped[shape] = cols
@@ -605,4 +698,107 @@ class SmolVLMImageProcessor(TorchvisionBackend):
         return num_patches, num_rows, num_cols
 
 
-__all__ = ["SmolVLMImageProcessor"]
+def run_focus_partitioning_tests():
+    """
+    Tests for split_images_around_point / focus_point partitioning.
+
+    Call this AFTER patching transformers (i.e. from run_inference.py):
+        from transformers.models.smolvlm.image_processing_smolvlm import run_focus_partitioning_tests
+        run_focus_partitioning_tests()
+
+    Expected encoder output shape after these 2 partitions go through the
+    SmolVLM2-256M vision encoder: (2, 64, 576)
+      2   = num partitions (local crop + global)
+      64  = (image_size / patch_size)^2 = (256/32)^2
+      576 = vision encoder hidden_dim for SmolVLM2-256M
+    """
+    print("\n" + "=" * 60)
+    print("Running focus-partitioning tests")
+    print("=" * 60)
+
+    proc = SmolVLMImageProcessor()
+    max_size = proc.max_image_size["longest_edge"]  # 364
+
+    # ── Test 1: output tensor shape (2 partitions) ────────────────────────────
+    img = torch.rand(1, 3, 728, 728)
+    frames, rows, cols = proc.split_images_around_point(
+        img, point=(0.5, 0.5), max_image_size=proc.max_image_size
+    )
+    assert frames.shape == (1, 2, 3, max_size, max_size), \
+        f"T1 FAIL: expected (1,2,3,{max_size},{max_size}), got {frames.shape}"
+    assert rows == [1] and cols == [1], f"T1 FAIL: rows={rows} cols={cols}"
+    print(f"  T1 PASS  shape={tuple(frames.shape)}  rows={rows}  cols={cols}")
+
+    # ── Test 2: local crop area ≈ 25 % of original ───────────────────────────
+    H, W = 800, 600
+    crop_side = max(1, int(math.sqrt(0.25 * H * W)))
+    ratio = (crop_side ** 2) / (H * W)
+    assert abs(ratio - 0.25) < 0.02, f"T2 FAIL: area ratio {ratio:.4f}, expected ~0.25"
+    print(f"  T2 PASS  crop_side={crop_side}  area_ratio={ratio:.4f}  (target=0.25)")
+
+    # ── Test 3: focus point lies inside the local crop ───────────────────────
+    H, W = 728, 728
+    img3 = torch.rand(1, 3, H, W)
+    px, py = int(0.3 * W), int(0.7 * H)       # off-centre point
+    crop_side = max(1, int(math.sqrt(0.25 * H * W)))
+    x1 = max(0, min(px - crop_side // 2, W - crop_side))
+    y1 = max(0, min(py - crop_side // 2, H - crop_side))
+    x2, y2 = x1 + crop_side, y1 + crop_side
+    assert x1 <= px <= x2 and y1 <= py <= y2, \
+        f"T3 FAIL: point ({px},{py}) outside crop [{x1}:{x2}, {y1}:{y2}]"
+    print(f"  T3 PASS  point=({px},{py}) inside crop [{x1}:{x2}, {y1}:{y2}]")
+
+    # ── Test 4: top-left corner point → crop clamped, still valid shape ───────
+    img4 = torch.rand(1, 3, 728, 728)
+    frames4, _, _ = proc.split_images_around_point(
+        img4, point=(0.0, 0.0), max_image_size=proc.max_image_size
+    )
+    assert frames4.shape == (1, 2, 3, max_size, max_size), \
+        f"T4 FAIL: corner-point shape {frames4.shape}"
+    print(f"  T4 PASS  corner point (0,0) → shape {tuple(frames4.shape)}")
+
+    # ── Test 5: bottom-right corner point → crop clamped ────────────────────
+    img5 = torch.rand(1, 3, 728, 728)
+    frames5, _, _ = proc.split_images_around_point(
+        img5, point=(1.0, 1.0), max_image_size=proc.max_image_size
+    )
+    assert frames5.shape == (1, 2, 3, max_size, max_size), \
+        f"T5 FAIL: corner-point shape {frames5.shape}"
+    print(f"  T5 PASS  corner point (1,1) → shape {tuple(frames5.shape)}")
+
+    # ── Test 6: absolute pixel coordinates ───────────────────────────────────
+    img6 = torch.rand(1, 3, 728, 728)
+    frames6, _, _ = proc.split_images_around_point(
+        img6, point=(364.0, 364.0), max_image_size=proc.max_image_size
+    )
+    assert frames6.shape == (1, 2, 3, max_size, max_size), \
+        f"T6 FAIL: pixel-coord shape {frames6.shape}"
+    print(f"  T6 PASS  pixel coords (364,364) → shape {tuple(frames6.shape)}")
+
+    # ── Test 7: full preprocess() integration via focus_point kwarg ──────────
+    img7 = torch.rand(3, 728, 728)          # (C, H, W) — standard single-image input
+    result = proc.preprocess([img7], return_tensors="pt", focus_point=(0.5, 0.5))
+    pv = result["pixel_values"]
+    assert pv.shape[1] == 2, \
+        f"T7 FAIL: expected 2 partitions in pixel_values, got {pv.shape[1]}"
+    print(f"  T7 PASS  preprocess pixel_values shape: {tuple(pv.shape)}")
+    print(f"           (batch={pv.shape[0]}, partitions={pv.shape[1]}, "
+          f"C={pv.shape[2]}, H={pv.shape[3]}, W={pv.shape[4]})")
+
+    # ── Test 8: focus_point=None → original partitioning unchanged ────────────
+    img8 = torch.rand(3, 200, 200)          # small image → should NOT be split
+    result8 = proc.preprocess([img8], return_tensors="pt", focus_point=None)
+    pv8 = result8["pixel_values"]
+    # Small image (200×200 < 364 max_image_size) → 1 partition (no splitting needed)
+    assert pv8.shape[1] == 1, \
+        f"T8 FAIL: expected 1 partition for small image, got {pv8.shape[1]}"
+    print(f"  T8 PASS  focus_point=None, small image → {pv8.shape[1]} partition "
+          f"(original behaviour preserved)")
+
+    print("\nAll 8 tests PASSED")
+    print(f"\nNote: after the vision encoder, 2 partitions should produce shape")
+    print(f"      (2, 64, 576) for SmolVLM2-256M  [2 patches × 64 tokens × 576 hidden]")
+    print("=" * 60)
+
+
+__all__ = ["SmolVLMImageProcessor", "run_focus_partitioning_tests"]
