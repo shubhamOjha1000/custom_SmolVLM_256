@@ -18,6 +18,13 @@ import sys
 import shutil
 import importlib
 import time
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--image", default="statue_of_liberty.jpg", help="Path to input image")
+parser.add_argument("--prompt", default="Describe this image.", help="Text prompt")
+parser.add_argument("--focus", default="0.5,0.5", help="Focus point as x,y in [0,1] (default: 0.5,0.5)")
+args = parser.parse_args()
 
 # ── Step 1: Find where transformers is installed ──────────────────────────────
 import transformers
@@ -92,9 +99,8 @@ model = SmolVLMForConditionalGeneration.from_pretrained(
     _attn_implementation="eager",
 ).to(DEVICE)
 
-# ── Replace this with your actual image path ──────────────────────────────────
-IMAGE_PATH = "/content/drive/MyDrive/Test_imgage_folder/img1.png"   # <-- change this
-PROMPT = "What is the person holding"
+IMAGE_PATH = args.image
+PROMPT     = args.prompt
 
 if not os.path.exists(IMAGE_PATH):
     print(f"[warning] Image not found: {IMAGE_PATH}")
@@ -196,7 +202,7 @@ print("\n" + "─"*56)
 print("  FOCUS-POINT INFERENCE  (local crop + global = 2 tiles)")
 print("─"*56)
 
-FOCUS_POINT = (0.5, 0.5)   # normalised (x, y) in [0,1]  — change as needed
+FOCUS_POINT = tuple(float(v) for v in args.focus.split(","))
 
 raw_inputs = processor.image_processor.preprocess(
     [image], return_tensors="pt", focus_point=FOCUS_POINT
