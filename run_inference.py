@@ -17,6 +17,7 @@ import os
 import sys
 import shutil
 import importlib
+import time
 
 # ── Step 1: Find where transformers is installed ──────────────────────────────
 import transformers
@@ -71,14 +72,15 @@ print("\n[setup] Modules reloaded. Your custom code is now active.\n")
 from transformers.models.smolvlm.image_processing_smolvlm import run_focus_partitioning_tests
 run_focus_partitioning_tests()
 
-# ── Step 4: Normal HuggingFace inference ──────────────────────────────────────
+# ── Step 4: Load model & processor ───────────────────────────────────────────
 import torch
 from PIL import Image
-from transformers import AutoProcessor
+from transformers import AutoProcessor, StoppingCriteria, StoppingCriteriaList
 from transformers.models.smolvlm.modeling_smolvlm import SmolVLMForConditionalGeneration
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL_ID = "HuggingFaceTB/SmolVLM2-256M-Instruct"
+MAX_NEW_TOKENS = 100
 
 print(f"[inference] Loading model from: {MODEL_ID}")
 print(f"[inference] Device: {DEVICE}\n")
@@ -110,35 +112,98 @@ messages = [
         ],
     }
 ]
-
 prompt_text = processor.apply_chat_template(messages, add_generation_prompt=True)
+
+
+# ── Eval helper ───────────────────────────────────────────────────────────────
+class _FirstTokenTimer(StoppingCriteria):
+    """Records wall-clock time the moment the first new token is produced."""
+    def __init__(self):
+        self.t = None
+    def __call__(self, input_ids, scores, **kwargs):
+        if self.t is None:
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            self.t = time.perf_counter()
+        return False  # never stops generation early
+
+
+def run_eval(label, inputs):
+    """
+    Run model.generate() and print four metrics:
+      1. Visual tokens  — num_partitions × image_seq_len
+      2. TTFT           — ms from generate() start to first new token
+      3. Throughput     — new tokens / total generation time (tok/s)
+      4. Peak GPU mem   — MB allocated during generation
+    Returns decoded output string.
+    """
+    pv = inputs.get("pixel_values")
+    num_partitions  = pv.shape[1] if pv is not None else 0
+    image_seq_len   = model.model.image_seq_len
+    num_visual_tokens = num_partitions * image_seq_len
+
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.synchronize()
+
+    timer = _FirstTokenTimer()
+    t_start = time.perf_counter()
+
+    with torch.no_grad():
+        generated_ids = model.generate(
+            **inputs,
+            max_new_tokens=MAX_NEW_TOKENS,
+            stopping_criteria=StoppingCriteriaList([timer]),
+        )
+
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    t_end = time.perf_counter()
+
+    total_time   = t_end - t_start
+    ttft_ms      = (timer.t - t_start) * 1000 if timer.t else float("nan")
+    input_len    = inputs["input_ids"].shape[1]
+    new_tokens   = generated_ids.shape[1] - input_len
+    throughput   = new_tokens / total_time
+    peak_mem_mb  = torch.cuda.max_memory_allocated() / 1024**2 if torch.cuda.is_available() else 0.0
+
+    print(f"\n{'='*56}")
+    print(f"  EVAL — {label}")
+    print(f"{'='*56}")
+    print(f"  1. Visual tokens       {num_visual_tokens:>6}  "
+          f"({num_partitions} partition(s) × {image_seq_len} seq_len)")
+    print(f"  2. TTFT                {ttft_ms:>6.1f} ms")
+    print(f"  3. Throughput          {throughput:>6.1f} tok/s  "
+          f"({new_tokens} tokens in {total_time:.2f}s)")
+    print(f"  4. Peak GPU memory     {peak_mem_mb:>6.1f} MB")
+    print(f"{'='*56}")
+
+    output = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+    print(f"\n[output]\n{output}")
+    return output
+
+
+# ── Step 5: Normal inference (full grid partitioning) ─────────────────────────
+print("\n" + "─"*56)
+print("  NORMAL INFERENCE  (full grid partitioning)")
+print("─"*56)
 inputs = processor(text=prompt_text, images=[image], return_tensors="pt").to(DEVICE)
+run_eval("Normal (grid partitioning)", inputs)
 
-print("[inference] Running generation...")
-with torch.no_grad():
-    generated_ids = model.generate(**inputs, max_new_tokens=100)
 
-output = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-print(f"\n[output]\n{output}")
+# ── Step 6: Focus-point inference (2 partitions: local crop + global) ─────────
+print("\n" + "─"*56)
+print("  FOCUS-POINT INFERENCE  (local crop + global = 2 tiles)")
+print("─"*56)
 
-# ── Focus-point inference ─────────────────────────────────────────────────────
-print("\n[focus] Running focus-point inference...")
-FOCUS_POINT = (0.5, 0.3)   # normalised (x, y): 0-1 fractions of W and H
-                             # change to pixel coords e.g. (320, 240) for a 640×480 image
+FOCUS_POINT = (0.5, 0.3)   # normalised (x, y) in [0,1]  — change as needed
 
 raw_inputs = processor.image_processor.preprocess(
     [image], return_tensors="pt", focus_point=FOCUS_POINT
 )
-# pixel_values shape → (1, 2, 3, H, H)
-#   partition 0: local crop centred on FOCUS_POINT (≈25 % of image area)
-#   partition 1: global overview of the full image
-# After vision encoder → (2, 64, 576) for SmolVLM2-256M
 print(f"[focus] pixel_values shape: {tuple(raw_inputs['pixel_values'].shape)}")
 
-# Expand the text to match exactly 2 partitions (1×1 local crop + global).
-# rows=[[1]], cols=[[1]] tells the processor: one sub-image at row_1_col_1 + global.
-# Without this the tokenizer sees only one raw <image> token and the model
-# raises "image tokens not divisible by patch_size".
+# Expand text to match 2-partition layout (1×1 local crop + global)
 focus_prompt_text = processor.expand_text_with_image_tokens(
     [prompt_text], image_rows=[[1]], image_cols=[[1]]
 )[0]
@@ -146,7 +211,4 @@ text_inputs = processor.tokenizer(focus_prompt_text, return_tensors="pt")
 focus_inputs = {**raw_inputs, **text_inputs}
 focus_inputs = {k: v.to(DEVICE) for k, v in focus_inputs.items()}
 
-with torch.no_grad():
-    focus_ids = model.generate(**focus_inputs, max_new_tokens=100)
-focus_output = processor.batch_decode(focus_ids, skip_special_tokens=True)[0]
-print(f"\n[focus output]\n{focus_output}")
+run_eval("Focus-point (local crop + global)", focus_inputs)
