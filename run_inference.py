@@ -129,13 +129,20 @@ FOCUS_POINT = (0.5, 0.3)   # normalised (x, y): 0-1 fractions of W and H
 raw_inputs = processor.image_processor.preprocess(
     [image], return_tensors="pt", focus_point=FOCUS_POINT
 )
-# pixel_values shape → (1, 2, 3, 364, 364)
+# pixel_values shape → (1, 2, 3, H, H)
 #   partition 0: local crop centred on FOCUS_POINT (≈25 % of image area)
 #   partition 1: global overview of the full image
 # After vision encoder → (2, 64, 576) for SmolVLM2-256M
 print(f"[focus] pixel_values shape: {tuple(raw_inputs['pixel_values'].shape)}")
 
-text_inputs = processor.tokenizer(prompt_text, return_tensors="pt")
+# Expand the text to match exactly 2 partitions (1×1 local crop + global).
+# rows=[[1]], cols=[[1]] tells the processor: one sub-image at row_1_col_1 + global.
+# Without this the tokenizer sees only one raw <image> token and the model
+# raises "image tokens not divisible by patch_size".
+focus_prompt_text = processor.expand_text_with_image_tokens(
+    [prompt_text], image_rows=[[1]], image_cols=[[1]]
+)[0]
+text_inputs = processor.tokenizer(focus_prompt_text, return_tensors="pt")
 focus_inputs = {**raw_inputs, **text_inputs}
 focus_inputs = {k: v.to(DEVICE) for k, v in focus_inputs.items()}
 
