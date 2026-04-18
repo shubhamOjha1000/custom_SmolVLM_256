@@ -139,7 +139,7 @@ prompt_text = processor.apply_chat_template(messages, add_generation_prompt=True
 #  PARTITION VISUALISER
 # ══════════════════════════════════════════════════════════════════════════════
 
-def show_partitions(pixel_values: "torch.Tensor"):
+def show_partitions(pixel_values: "torch.Tensor", focus_point=None):
     """
     Display the two focus partitions side-by-side.
     pixel_values: (1, 2, C, H, W) — batch=1, 2 partitions from focus preprocess
@@ -163,7 +163,7 @@ def show_partitions(pixel_values: "torch.Tensor"):
         ax.set_title(titles[i])
         ax.axis("off")
 
-    plt.suptitle(f"Focus partitions  (focus point={FOCUS_POINT})", fontsize=12)
+    plt.suptitle(f"Focus partitions  (focus point={focus_point})", fontsize=12)
     plt.tight_layout()
     plt.savefig("focus_partitions.png", dpi=150, bbox_inches="tight")
     print("[partitions] saved → focus_partitions.png")
@@ -275,7 +275,7 @@ raw_inputs = processor.image_processor.preprocess(
 print(f"[focus] pixel_values shape: {tuple(raw_inputs['pixel_values'].shape)}")
 
 if args.show_partitions:
-    show_partitions(raw_inputs["pixel_values"])
+    show_partitions(raw_inputs["pixel_values"], focus_point=FOCUS_POINT)
 
 focus_prompt_text = processor.expand_text_with_image_tokens(
     [prompt_text], image_rows=[[1]], image_cols=[[1]]
