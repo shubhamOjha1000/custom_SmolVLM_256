@@ -26,6 +26,8 @@ parser.add_argument("--focus",      default="0.5,0.5",                 help="Foc
 parser.add_argument("--max-tokens", default=100,   type=int,           help="Max new tokens (default: 100)")
 parser.add_argument("--dtype",      default="bfloat16",
                     choices=["bfloat16", "float16", "float32", "int8"], help="Model dtype (default: bfloat16)")
+parser.add_argument("--show-partitions", action="store_true",
+                    help="Display the two focus partitions (local crop + global) as images")
 args = parser.parse_args()
 
 # ── Step 1: Find where transformers is installed ──────────────────────────────
@@ -134,6 +136,45 @@ prompt_text = processor.apply_chat_template(messages, add_generation_prompt=True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  PARTITION VISUALISER
+# ══════════════════════════════════════════════════════════════════════════════
+
+def show_partitions(pixel_values: "torch.Tensor"):
+    """
+    Display the two focus partitions side-by-side.
+    pixel_values: (1, 2, C, H, W) — batch=1, 2 partitions from focus preprocess
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from transformers.image_utils import IMAGENET_STANDARD_MEAN, IMAGENET_STANDARD_STD
+
+    mean = torch.tensor(IMAGENET_STANDARD_MEAN).view(3, 1, 1)
+    std  = torch.tensor(IMAGENET_STANDARD_STD).view(3, 1, 1)
+
+    titles = ["Partition 0 — Focus crop (local)", "Partition 1 — Global overview"]
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+
+    for i, ax in enumerate(axes):
+        t = pixel_values[0, i].float().cpu()   # (C, H, W)
+        t = t * std + mean                      # un-normalise
+        t = t.clamp(0, 1)
+        img_np = t.permute(1, 2, 0).numpy()    # (H, W, C)
+        ax.imshow(img_np)
+        ax.set_title(titles[i])
+        ax.axis("off")
+
+    plt.suptitle(f"Focus partitions  (focus point={FOCUS_POINT})", fontsize=12)
+    plt.tight_layout()
+    plt.savefig("focus_partitions.png", dpi=150, bbox_inches="tight")
+    print("[partitions] saved → focus_partitions.png")
+
+    try:
+        plt.show()
+    except Exception:
+        pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  EVAL HELPER
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -232,6 +273,9 @@ raw_inputs = processor.image_processor.preprocess(
     [image], return_tensors="pt", focus_point=FOCUS_POINT
 )
 print(f"[focus] pixel_values shape: {tuple(raw_inputs['pixel_values'].shape)}")
+
+if args.show_partitions:
+    show_partitions(raw_inputs["pixel_values"])
 
 focus_prompt_text = processor.expand_text_with_image_tokens(
     [prompt_text], image_rows=[[1]], image_cols=[[1]]
