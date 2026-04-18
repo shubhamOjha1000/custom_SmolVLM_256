@@ -190,6 +190,7 @@ def apply_token_budget(
     if is_focus and N == 2:
         focus_T  = max(1, round(total_budget * focus_pct / 100))
         global_T = max(1, total_budget - focus_T)
+        focus_T  = max(1, total_budget - global_T)  # re-clamp so focus_T+global_T == total_budget
         focus_part  = _pool1d(image_hidden_states[0], focus_T)   # (focus_T, D)
         global_part = _pool1d(image_hidden_states[1], global_T)  # (global_T, D)
         budgeted = torch.cat([focus_part, global_part], dim=0).unsqueeze(0)
@@ -284,9 +285,10 @@ def run_token_budget_tests():
     # ── T4: focus path, all tokens to focus (focus_pct=100) ──────────────────
     hs = torch.rand(2, 64, D)
     out, total = apply_token_budget(hs, total_budget=32, focus_pct=100.0, is_focus=True)
+    # global_T = max(1, 0) = 1, then focus_T = max(1, 32-1) = 31 → total = 32
     assert out.shape[1] == 32,    f"T4 FAIL shape: {out.shape}"
-    # global_T = max(1, 32-32) = 1, focus_T = 31 → total = 32
-    print(f"  T4 PASS  focus_pct=100 → shape {tuple(out.shape)}, total={total}")
+    assert total == 32,           f"T4 FAIL total: {total}"
+    print(f"  T4 PASS  focus_pct=100 → focus=31 global=1 total={total}, shape {tuple(out.shape)}")
 
     # ── T5: normal (non-focus) path, equal split across 4 partitions ─────────
     hs = torch.rand(4, 64, D)   # 4 partitions, 64 tokens each = 256 total
