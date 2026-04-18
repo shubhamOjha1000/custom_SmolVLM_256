@@ -28,6 +28,8 @@ parser.add_argument("--dtype",      default="bfloat16",
                     choices=["bfloat16", "float16", "float32", "int8"], help="Model dtype (default: bfloat16)")
 parser.add_argument("--crop-pct",    default=25.0,  type=float,
                     help="Local crop size as %% of original image area (default: 25.0)")
+parser.add_argument("--focus-only",  action="store_true",
+                    help="Pass only the focus crop partition to the encoder, skip global image (encoder shape: (1,1024,768))")
 parser.add_argument("--show-partitions", action="store_true",
                     help="Display the two focus partitions (local crop + global) as images")
 args = parser.parse_args()
@@ -252,8 +254,9 @@ run_eval("Normal", inputs)
 # ══════════════════════════════════════════════════════════════════════════════
 #  STEP 6 — Focus-point inference (local crop + global = 2 partitions)
 # ══════════════════════════════════════════════════════════════════════════════
+focus_mode = "focus-only" if args.focus_only else "focus+global"
 print("\n" + "─"*60)
-print("  FOCUS-POINT INFERENCE  (local crop + global = 2 tiles)")
+print(f"  FOCUS-POINT INFERENCE  ({focus_mode})")
 print("─"*60)
 
 FOCUS_POINT = tuple(float(v) for v in args.focus.split(","))
@@ -266,11 +269,24 @@ print(f"[focus] pixel_values shape: {tuple(raw_inputs['pixel_values'].shape)}")
 if args.show_partitions:
     show_partitions(image, FOCUS_POINT)
 
-focus_prompt_text = processor.expand_text_with_image_tokens(
-    [prompt_text], image_rows=[[1]], image_cols=[[1]]
-)[0]
+if args.focus_only:
+    # Keep only partition 0 (focus crop), drop partition 1 (global)
+    raw_inputs["pixel_values"] = raw_inputs["pixel_values"][:, :1]   # (1,1,3,512,512)
+    if "pixel_attention_mask" in raw_inputs:
+        raw_inputs["pixel_attention_mask"] = raw_inputs["pixel_attention_mask"][:, :1]
+    print(f"[focus-only] pixel_values trimmed to: {tuple(raw_inputs['pixel_values'].shape)}")
+    # 1 partition → no sub-grid rows/cols
+    focus_prompt_text = processor.expand_text_with_image_tokens(
+        [prompt_text], image_rows=[[0]], image_cols=[[0]]
+    )[0]
+else:
+    # Both partitions: focus crop (sub-tile 1×1) + global
+    focus_prompt_text = processor.expand_text_with_image_tokens(
+        [prompt_text], image_rows=[[1]], image_cols=[[1]]
+    )[0]
+
 text_inputs = processor.tokenizer(focus_prompt_text, return_tensors="pt")
 focus_inputs = {**raw_inputs, **text_inputs}
 focus_inputs = {k: v.to(DEVICE) for k, v in focus_inputs.items()}
 
-run_eval("Focus-point", focus_inputs)
+run_eval(f"Focus-point [{focus_mode}]", focus_inputs)
