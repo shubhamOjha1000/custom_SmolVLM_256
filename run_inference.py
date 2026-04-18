@@ -141,37 +141,23 @@ prompt_text = processor.apply_chat_template(messages, add_generation_prompt=True
 
 def show_partitions(pixel_values: "torch.Tensor", focus_point=None):
     """
-    Display the two focus partitions side-by-side.
-    pixel_values: (1, 2, C, H, W) — batch=1, 2 partitions from focus preprocess
+    Save the two focus partitions as individual PNG files to /content/.
+    pixel_values: (1, 2, C, H, W)
     """
     import numpy as np
-    import matplotlib.pyplot as plt
-    from transformers.image_utils import IMAGENET_STANDARD_MEAN, IMAGENET_STANDARD_STD
 
-    mean = torch.tensor(IMAGENET_STANDARD_MEAN).view(3, 1, 1)
-    std  = torch.tensor(IMAGENET_STANDARD_STD).view(3, 1, 1)
+    mean = torch.tensor(processor.image_processor.image_mean).view(3, 1, 1)
+    std  = torch.tensor(processor.image_processor.image_std).view(3, 1, 1)
 
-    titles = ["Partition 0 — Focus crop (local)", "Partition 1 — Global overview"]
-    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-
-    for i, ax in enumerate(axes):
-        t = pixel_values[0, i].float().cpu()   # (C, H, W)
-        t = t * std + mean                      # un-normalise
-        t = t.clamp(0, 1)
-        img_np = t.permute(1, 2, 0).numpy()    # (H, W, C)
-        ax.imshow(img_np)
-        ax.set_title(titles[i])
-        ax.axis("off")
-
-    plt.suptitle(f"Focus partitions  (focus point={focus_point})", fontsize=12)
-    plt.tight_layout()
-    plt.savefig("focus_partitions.png", dpi=150, bbox_inches="tight")
-    print("[partitions] saved → focus_partitions.png")
-
-    try:
-        plt.show()
-    except Exception:
-        pass
+    labels = ["partition0_focus_crop", "partition1_global"]
+    for i, label in enumerate(labels):
+        t = pixel_values[0, i].float().cpu()          # (C, H, W)
+        t = (t * std + mean).clamp(0, 1)              # un-normalise → [0, 1]
+        img_np = (t.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+        pil_img = Image.fromarray(img_np)
+        save_path = f"/content/{label}.png"
+        pil_img.save(save_path)
+        print(f"[partitions] saved → {save_path}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
