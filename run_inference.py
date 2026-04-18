@@ -196,8 +196,7 @@ def run_attention_visualization(full_focus_inputs):
     last_idx     = seq_len - 1
 
     # Decoder layer count
-    lm         = model.model.language_model
-    num_layers = len(lm.model.layers)
+    num_layers = len(model.model.text_model.layers)
     layer_indices = [0, 1, num_layers - 2, num_layers - 1]
     layer_labels  = [
         "Layer 1\n(first)",
