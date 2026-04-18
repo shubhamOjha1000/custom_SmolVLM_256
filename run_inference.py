@@ -139,24 +139,24 @@ prompt_text = processor.apply_chat_template(messages, add_generation_prompt=True
 #  PARTITION VISUALISER
 # ══════════════════════════════════════════════════════════════════════════════
 
-def show_partitions(pixel_values: "torch.Tensor", focus_point=None):
+def show_partitions(image, focus_point):
     """
-    Save the two focus partitions as individual PNG files to /content/.
-    pixel_values: (1, 2, C, H, W)
+    Save the two focus partitions as PNG files to /content/.
+    Re-runs preprocess with do_normalize=False to get raw [0,1] pixels.
     """
     import numpy as np
 
-    mean = torch.tensor(processor.image_processor.image_mean).view(3, 1, 1)
-    std  = torch.tensor(processor.image_processor.image_std).view(3, 1, 1)
+    vis = processor.image_processor.preprocess(
+        [image], return_tensors="pt", focus_point=focus_point, do_normalize=False
+    )
+    pv = vis["pixel_values"]   # (1, 2, C, H, W), values in [0, 1]
 
     labels = ["partition0_focus_crop", "partition1_global"]
     for i, label in enumerate(labels):
-        t = pixel_values[0, i].float().cpu()          # (C, H, W)
-        t = (t * std + mean).clamp(0, 1)              # un-normalise → [0, 1]
-        img_np = (t.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
-        pil_img = Image.fromarray(img_np)
+        t = pv[0, i].float().cpu()                                        # (C, H, W)
+        img_np = (t.permute(1, 2, 0).numpy() * 255).astype("uint8")      # (H, W, C)
         save_path = f"/content/{label}.png"
-        pil_img.save(save_path)
+        Image.fromarray(img_np).save(save_path)
         print(f"[partitions] saved → {save_path}")
 
 
@@ -261,7 +261,7 @@ raw_inputs = processor.image_processor.preprocess(
 print(f"[focus] pixel_values shape: {tuple(raw_inputs['pixel_values'].shape)}")
 
 if args.show_partitions:
-    show_partitions(raw_inputs["pixel_values"], focus_point=FOCUS_POINT)
+    show_partitions(image, FOCUS_POINT)
 
 focus_prompt_text = processor.expand_text_with_image_tokens(
     [prompt_text], image_rows=[[1]], image_cols=[[1]]
