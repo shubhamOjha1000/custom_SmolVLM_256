@@ -247,24 +247,29 @@ class SmolVLMImageProcessor(TorchvisionBackend):
 
     def __init__(self, **kwargs: Unpack[SmolVLMImageProcessorKwargs]):
         super().__init__(**kwargs)
-        self._focus_point = None  # set via preprocess(focus_point=...) before each call
+        self._focus_point = None
+        self._focus_crop_pct = 25.0  # % of image area covered by local crop
 
     @auto_docstring
-    def preprocess(self, images: ImageInput, focus_point=None, **kwargs: Unpack[SmolVLMImageProcessorKwargs]) -> BatchFeature:
+    def preprocess(self, images: ImageInput, focus_point=None, focus_crop_pct=None, **kwargs: Unpack[SmolVLMImageProcessorKwargs]) -> BatchFeature:
         """
         focus_point (`tuple`, *optional*):
             ``(x, y)`` coordinates of the region of interest. When provided,
             image splitting is replaced by dynamic focus partitioning: one local
-            crop centred on ``(x, y)`` (covering ≈25 % of the image) + one
-            global overview → exactly 2 partitions total.
+            crop centred on ``(x, y)`` + one global overview → exactly 2 partitions.
             Values in [0, 1] are treated as normalised fractions; values > 1
             as absolute pixel coordinates.
+        focus_crop_pct (`float`, *optional*):
+            Percentage of the original image area covered by the local crop (default: 25.0).
         """
         self._focus_point = focus_point
+        if focus_crop_pct is not None:
+            self._focus_crop_pct = focus_crop_pct
         try:
             return super().preprocess(images, **kwargs)
         finally:
-            self._focus_point = None  # always reset, even on exception
+            self._focus_point = None
+            self._focus_crop_pct = 25.0
 
     def _prepare_images_structure(self, images: ImageInput, expected_ndims: int = 3) -> ImageInput:
         """
@@ -366,6 +371,7 @@ class SmolVLMImageProcessor(TorchvisionBackend):
         point: tuple,
         max_image_size: dict,
         resample=None,
+        crop_pct: float = 25.0,
     ):
         """
         Create exactly 2 partitions from each image:
@@ -399,8 +405,8 @@ class SmolVLMImageProcessor(TorchvisionBackend):
 
         px, py = int(round(px)), int(round(py))
 
-        # Square crop whose area = 25 % of the original image
-        crop_side = max(1, int(math.sqrt(0.25 * height * width)))
+        # Square crop whose area = crop_pct % of the original image
+        crop_side = max(1, int(math.sqrt((crop_pct / 100.0) * height * width)))
 
         # Clamp so the crop stays fully inside the image
         x1 = max(0, min(px - crop_side // 2, width - crop_side))
@@ -565,6 +571,7 @@ class SmolVLMImageProcessor(TorchvisionBackend):
                     stacked_images, rows, cols = self.split_images_around_point(
                         stacked_images, focus_point,
                         max_image_size=max_image_size, resample=resample,
+                        crop_pct=getattr(self, '_focus_crop_pct', 25.0),
                     )
                 else:
                     # ── Original grid-based partitioning (unchanged) ──────────────

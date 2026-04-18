@@ -26,6 +26,8 @@ parser.add_argument("--focus",      default="0.5,0.5",                 help="Foc
 parser.add_argument("--max-tokens", default=100,   type=int,           help="Max new tokens (default: 100)")
 parser.add_argument("--dtype",      default="bfloat16",
                     choices=["bfloat16", "float16", "float32", "int8"], help="Model dtype (default: bfloat16)")
+parser.add_argument("--crop-pct",    default=25.0,  type=float,
+                    help="Local crop size as %% of original image area (default: 25.0)")
 parser.add_argument("--show-partitions", action="store_true",
                     help="Display the two focus partitions (local crop + global) as images")
 args = parser.parse_args()
@@ -147,7 +149,8 @@ def show_partitions(image, focus_point):
     import numpy as np
 
     vis = processor.image_processor.preprocess(
-        [image], return_tensors="pt", focus_point=focus_point, do_normalize=False
+        [image], return_tensors="pt", focus_point=focus_point,
+        focus_crop_pct=args.crop_pct, do_normalize=False
     )
     pv = vis["pixel_values"]   # (1, 2, C, H, W), values in [0, 1]
 
@@ -256,7 +259,7 @@ print("─"*60)
 FOCUS_POINT = tuple(float(v) for v in args.focus.split(","))
 
 raw_inputs = processor.image_processor.preprocess(
-    [image], return_tensors="pt", focus_point=FOCUS_POINT
+    [image], return_tensors="pt", focus_point=FOCUS_POINT, focus_crop_pct=args.crop_pct
 )
 print(f"[focus] pixel_values shape: {tuple(raw_inputs['pixel_values'].shape)}")
 
