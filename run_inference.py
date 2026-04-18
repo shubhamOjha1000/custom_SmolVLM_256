@@ -32,6 +32,8 @@ parser.add_argument("--focus-only",  action="store_true",
                     help="Pass only the focus crop partition to the encoder, skip global image (encoder shape: (1,1024,768))")
 parser.add_argument("--show-partitions", action="store_true",
                     help="Display the two focus partitions (local crop + global) as images")
+parser.add_argument("--attn-vis",    action="store_true",
+                    help="Visualize decoder attention: focus crop vs global partition (saves /content/attn_partition_comparison.png)")
 args = parser.parse_args()
 
 # ── Step 1: Find where transformers is installed ──────────────────────────────
@@ -166,6 +168,90 @@ def show_partitions(image, focus_point):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  ATTENTION VISUALISER
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_attention_visualization(full_focus_inputs):
+    import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    input_ids = full_focus_inputs["input_ids"]   # (1, seq_len)
+    seq_len   = input_ids.shape[1]
+
+    # Find image token id
+    try:
+        image_token_id = model.config.image_token_id
+    except AttributeError:
+        image_token_id = processor.tokenizer.convert_tokens_to_ids(processor.image_token)
+
+    visual_positions = (input_ids[0] == image_token_id).nonzero(as_tuple=True)[0].cpu()
+    n_vis = len(visual_positions)
+    print(f"[attn-vis] {n_vis} visual tokens at positions {visual_positions[0].item()}..{visual_positions[-1].item()}")
+
+    half         = n_vis // 2
+    focus_pos    = visual_positions[:half]   # first 64 = focus crop
+    global_pos   = visual_positions[half:]   # last  64 = global
+    last_idx     = seq_len - 1
+
+    # Decoder layer count
+    lm         = model.model.language_model
+    num_layers = len(lm.model.layers)
+    layer_indices = [0, 1, num_layers - 2, num_layers - 1]
+    layer_labels  = [
+        "Layer 1\n(first)",
+        "Layer 2",
+        f"Layer {num_layers - 1}\n(2nd-to-last)",
+        f"Layer {num_layers}\n(last)",
+    ]
+
+    print("[attn-vis] running forward pass with output_attentions=True ...")
+    with torch.no_grad():
+        outputs = model(**full_focus_inputs, output_attentions=True)
+
+    attentions = outputs.attentions   # tuple[num_layers] of (1, heads, seq, seq)
+
+    focus_sums, global_sums = [], []
+    for idx in layer_indices:
+        attn      = attentions[idx][0].float().cpu()  # (heads, seq, seq)
+        attn_last = attn[:, last_idx, :]              # (heads, seq)
+        attn_mean = attn_last.mean(dim=0)             # (seq,)
+        fs = attn_mean[focus_pos].sum().item()
+        gs = attn_mean[global_pos].sum().item()
+        focus_sums.append(fs)
+        global_sums.append(gs)
+        print(f"[attn-vis] layer {idx:2d}: focus={fs:.4f}  global={gs:.4f}")
+
+    # Plot
+    fig, axes = plt.subplots(1, 4, figsize=(14, 4), sharey=False)
+    colors = ["#2196F3", "#FF9800"]
+    y_max  = max(max(focus_sums), max(global_sums)) * 1.3
+
+    for i, (ax, label) in enumerate(zip(axes, layer_labels)):
+        vals = [focus_sums[i], global_sums[i]]
+        bars = ax.bar(["Focus\nCrop", "Global"], vals, color=colors, edgecolor="black", width=0.5)
+        ax.set_title(label, fontsize=9)
+        ax.set_ylim(0, y_max)
+        if i == 0:
+            ax.set_ylabel("Attention Sum\n(heads averaged)", fontsize=8)
+        for bar, v in zip(bars, vals):
+            ax.text(bar.get_x() + bar.get_width() / 2, v + y_max * 0.02,
+                    f"{v:.4f}", ha="center", va="bottom", fontsize=8)
+
+    fig.suptitle(
+        f"Decoder Attention — Focus Crop vs Global  "
+        f"({half} visual tokens each | heads averaged | last prompt token)",
+        fontsize=10,
+    )
+    plt.tight_layout()
+    save_path = "/content/attn_partition_comparison.png"
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"[attn-vis] saved → {save_path}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  EVAL HELPER
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -269,24 +355,29 @@ print(f"[focus] pixel_values shape: {tuple(raw_inputs['pixel_values'].shape)}")
 if args.show_partitions:
     show_partitions(image, FOCUS_POINT)
 
+# Build full 2-partition inputs (needed for attn-vis and normal focus+global run)
+full_prompt_text = processor.expand_text_with_image_tokens(
+    [prompt_text], image_rows=[[1]], image_cols=[[1]]
+)[0]
+full_text_inputs  = processor.tokenizer(full_prompt_text, return_tensors="pt")
+full_focus_inputs = {**raw_inputs, **full_text_inputs}
+full_focus_inputs = {k: v.to(DEVICE) for k, v in full_focus_inputs.items()}
+
+if args.attn_vis:
+    run_attention_visualization(full_focus_inputs)
+
 if args.focus_only:
     # Keep only partition 0 (focus crop), drop partition 1 (global)
-    raw_inputs["pixel_values"] = raw_inputs["pixel_values"][:, :1]   # (1,1,3,512,512)
+    fo_pv = raw_inputs["pixel_values"][:, :1]   # (1,1,3,512,512)
+    fo_inputs = {"pixel_values": fo_pv.to(DEVICE)}
     if "pixel_attention_mask" in raw_inputs:
-        raw_inputs["pixel_attention_mask"] = raw_inputs["pixel_attention_mask"][:, :1]
-    print(f"[focus-only] pixel_values trimmed to: {tuple(raw_inputs['pixel_values'].shape)}")
-    # 1 partition → no sub-grid rows/cols
-    focus_prompt_text = processor.expand_text_with_image_tokens(
+        fo_inputs["pixel_attention_mask"] = raw_inputs["pixel_attention_mask"][:, :1].to(DEVICE)
+    print(f"[focus-only] pixel_values trimmed to: {tuple(fo_pv.shape)}")
+    fo_prompt_text = processor.expand_text_with_image_tokens(
         [prompt_text], image_rows=[[0]], image_cols=[[0]]
     )[0]
+    fo_text = processor.tokenizer(fo_prompt_text, return_tensors="pt")
+    fo_inputs = {**fo_inputs, **{k: v.to(DEVICE) for k, v in fo_text.items()}}
+    run_eval("Focus-point [focus-only]", fo_inputs)
 else:
-    # Both partitions: focus crop (sub-tile 1×1) + global
-    focus_prompt_text = processor.expand_text_with_image_tokens(
-        [prompt_text], image_rows=[[1]], image_cols=[[1]]
-    )[0]
-
-text_inputs = processor.tokenizer(focus_prompt_text, return_tensors="pt")
-focus_inputs = {**raw_inputs, **text_inputs}
-focus_inputs = {k: v.to(DEVICE) for k, v in focus_inputs.items()}
-
-run_eval(f"Focus-point [{focus_mode}]", focus_inputs)
+    run_eval("Focus-point [focus+global]", full_focus_inputs)
