@@ -30,6 +30,8 @@ parser.add_argument("--budget",     default=0,     type=int,
                     help="Total visual token budget for decoder. 0 = no limit (default: 0)")
 parser.add_argument("--focus-pct",  default=50.0,  type=float,
                     help="Percent of budget allocated to focus-point partition (default: 50.0)")
+parser.add_argument("--max-size",   default=0,     type=int,
+                    help="Resize image longest edge to this before normal inference. 0 = no resize (default: 0)")
 args = parser.parse_args()
 
 # ── Step 1: Find where transformers is installed ──────────────────────────────
@@ -467,8 +469,14 @@ print("\n" + "─"*60)
 print("  NORMAL INFERENCE  (full grid partitioning, no budget)")
 print("─"*60)
 
-inputs = processor(text=prompt_text, images=[image], return_tensors="pt").to(DEVICE)
-run_eval("Normal", inputs)
+normal_image = image
+if args.max_size > 0:
+    normal_image = image.copy()
+    normal_image.thumbnail((args.max_size, args.max_size))
+    print(f"[normal] resized image: {image.size} → {normal_image.size} (--max-size {args.max_size})")
+
+inputs = processor(text=prompt_text, images=[normal_image], return_tensors="pt").to(DEVICE)
+run_eval("Normal" + (f"  [max-size={args.max_size}]" if args.max_size > 0 else ""), inputs)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
